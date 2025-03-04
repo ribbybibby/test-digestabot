@@ -1,0 +1,11 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: default
+  name: myjob
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+      - image: cgr.dev/chainguard/cosign:latest-dev@sha256:09653ac03c1ac1502c3e3a8831ee79252414e4d659b423b71fb7ed8b097e9c88
