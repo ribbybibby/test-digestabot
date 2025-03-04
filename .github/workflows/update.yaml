@@ -32,5 +32,5 @@ jobs:
     - uses: ribbybibby/differentiabot@impl
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        images: ${{ steps.digestabot.updated_images }}
-        pull_request_number: ${{ steps.digestabot.pull_request_number }}
+        images: ${{ steps.digestabot.outputs.updated_images }}
+        pull_request_number: ${{ steps.digestabot.outputs.pull_request_number }}
