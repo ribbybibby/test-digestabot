@@ -19,7 +19,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - uses: chainguard-dev/setup-chainctl@[VERSION]
+    - uses: chainguard-dev/setup-chainctl@v0
     #      with:
     #        # the ID of the identity this workflow should assume when speaking to Chainguard APIs.
     #        identity: "..."
