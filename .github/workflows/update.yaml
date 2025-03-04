@@ -28,7 +28,7 @@ jobs:
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
 
-    - uses: ribbybibby/differentiabot@impl
+    - uses: ribbybibby/digestabot-diff@impl
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         json: ${{ steps.digestabot.outputs.json }}
