@@ -58,7 +58,7 @@ jobs:
       if: ${{ steps.digestabot.outputs.json != '{}' }}
       id: pull_request
       with:
-        token: ${{ inputs.token }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         commit-message: 'Update image digests'
         title: 'Update image digests'
         body: |
