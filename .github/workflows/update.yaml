@@ -27,3 +27,4 @@ jobs:
       id: digestabot
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+        only-removed-vulnerabilities: true
