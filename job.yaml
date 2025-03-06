@@ -9,4 +9,4 @@ spec:
       restartPolicy: Never
       initContainers:
       - image: cgr.dev/chainguard/cosign:latest-dev@sha256:09653ac03c1ac1502c3e3a8831ee79252414e4d659b423b71fb7ed8b097e9c88
-      - image: cgr.dev/chainguard/python:latest@sha256:5ed3f963b919a876cf1225ad1aa0b16abbba23300c00c62fb564e4fabc28ae21
+      - image: cgr.dev/chainguard/python:latest@sha256:fb0da8091fbdfbc7180f30f4e90940a65407979f3a6b26ee4951ac103b6d9e53
