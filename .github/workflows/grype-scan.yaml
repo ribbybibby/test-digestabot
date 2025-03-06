@@ -1,0 +1,65 @@
+name: Digestabot Grype Scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    # At the end of every day
+    - cron: "0 0 * * *"
+
+jobs:
+  digestabot-grype-scan:
+    name: Digestabot Grype Scan
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # to push the updates
+      pull-requests: write # to open Pull requests
+      id-token: write # used to sign the commits using gitsign
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Run digestabot but don't create the PR.
+    - uses: chainguard-dev/digestabot@main
+      id: digestabot
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        create-pr: false
+
+    # Scan each updated image with Grype and include the results in the PR.
+    - shell: bash
+      id: grype
+      run: |
+        echo 'results<<EOF' >> "${GITHUB_OUTPUT}"
+        {
+          while read -r update; do
+            updated_image=$(jq -r '.image + '@' + .updated_digest' <<<"${update}")
+
+            echo "## ${updated_image}"
+            echo
+            echo '<details>'
+            echo
+            echo '```'
+            echo "$ grype ${updated_image} -o table"
+            grype "${updated_image}" -o table
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+          done < <(jq -c '.updates // [] | .[]' <<<'${{ steps.digestabot.outputs.json }}')
+        } >> "${GITHUB_OUTPUT}"
+        echo 'EOF' >> "${GITHUB_OUTPUT}"
+
+    # Create the pull request yourself
+    - uses: peter-evans/create-pull-request@v7
+      if: ${{ steps.digestabot.outputs.json != '{}' }}
+      id: pull_request
+      with:
+        token: ${{ inputs.token }}
+        commit-message: 'Update image digests'
+        title: 'Update image digests'
+        body: |
+          Update image digests.
+          ${{ steps.grype.outputs.results }}
+        delete-branch: true
+        branch: digestabot-pr
