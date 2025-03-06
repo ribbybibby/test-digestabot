@@ -19,6 +19,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # Intall grype
+    - uses: anchore/scan-action/download-grype@v3
+
     # Run digestabot but don't create the PR.
     - uses: chainguard-dev/digestabot@main
       id: digestabot
