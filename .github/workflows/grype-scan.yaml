@@ -33,7 +33,7 @@ jobs:
         echo 'results<<EOF' >> "${GITHUB_OUTPUT}"
         {
           while read -r update; do
-            updated_image=$(jq -r '.image + '@' + .updated_digest' <<<"${update}")
+            updated_image=$(jq -r '.image + "@" + .updated_digest' <<<"${update}")
 
             echo "## ${updated_image}"
             echo
