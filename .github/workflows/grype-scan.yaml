@@ -38,12 +38,12 @@ jobs:
           while read -r update; do
             updated_image=$(jq -r '.image + "@" + .updated_digest' <<<"${update}")
 
-            echo "## ${updated_image}"
+            echo "## ${updated_image%@*}"
+            echo "\`${updated_image#*@}\`"
             echo
             echo '<details>'
             echo
             echo '```'
-            echo "$ grype ${updated_image} -o table"
             grype "${updated_image}" -o table
             echo '```'
             echo
