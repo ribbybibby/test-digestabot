@@ -172,8 +172,8 @@ jobs:
       id: pull_request
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        commit-message: 'Update Digests (`chainctl image diff`)'
-        title: 'Update Digests (`chainctl image diff`)'
+        commit-message: 'Update Digests (+ `chainctl image diff`)'
+        title: 'Update Digests (+ `chainctl image diff`)'
         body: |
           Results of `chainctl image diff` for each image.
           ${{ steps.chainctl_image_diff.outputs.body }}
