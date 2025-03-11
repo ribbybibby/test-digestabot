@@ -16,3 +16,11 @@ It includes a summary of the differences in the PR body.
 It also avoids making changes that do not resolve any vulnerabilities. This
 could prevent some of the toil of reviewing PRs for images that are frequently
 updated.
+
+## Grype Scan
+
+Runs `grype` on each image update and adds a comment to the PR with the scan
+results.
+
+It also registers a failed check against the commit for any `High` or
+`Critical` severity CVEs.

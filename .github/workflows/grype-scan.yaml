@@ -1,0 +1,192 @@
+name: Grype Scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    # At the end of every day
+    - cron: "0 0 * * *"
+
+jobs:
+  grype-scan:
+    name: Grype Scan
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+      checks: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Install grype
+    - uses: anchore/scan-action/download-grype@v3
+
+    # Run digestabot
+    - uses: chainguard-dev/digestabot@main
+      id: digestabot
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        title-for-pr: 'Update Digests (+ `grype`)'
+        commit-message: 'Update Digests (+ `grype`)'
+        branch-for-pr: grype-scan
+
+    # Iterate over the updates described by the JSON output of digestabot. Run
+    # grype.
+    #
+    # Construct the comment body and set an output based on whether any of the
+    # scans have critical/high CVEs 
+    - shell: bash
+      id: grype_scan
+      if: ${{ steps.digestabot.outputs.pull_request_number != '' }}
+      run: |
+        # Track images with High/Critical findings in this output
+        failed_images='[]'
+
+        # Start the comment body
+        echo 'body<<EOF' >> "${GITHUB_OUTPUT}"
+
+        while read -r item; do
+          image=$(jq -r '.image + "@" + .updated_digest' <<<$item)
+
+          # Store the scan output in a filename derived from the image name. We
+          # can use this to avoid scanning the same images more than once.
+          grype_output="/tmp/$(sha256sum <<<"${image}" | awk '{print $1}').json"
+
+          # Skip images we've already scanned
+          if [[ -f "${grype_output}" ]]; then
+            echo "Skipping because we've already processed ${image}"
+            continue
+          fi
+
+          # Scan the image, save the results
+          echo "Scanning ${image}"
+          grype "${image}" --add-cpes-if-none -o json > "${grype_output}"
+
+          # This is the emoji we will include next to the image in the comment
+          # body
+          emoji=':white_check_mark:'
+
+          # If there are any CVEs then make the emoji a little warning sign
+          any_cves=$(jq -r '.matches // [] | .[] | .vulnerability.id' "${grype_output}")
+          if [[ -n "${any_cves}" ]]; then
+            emoji=':warning:'
+          fi
+
+          # If there are Critical or High CVEs then append the image to the
+          # list of failed ones and make the emoji a no entry sign
+          critical_or_highs=$(jq -r '.matches // [] | .[] | select((.vulnerability.severity | ascii_downcase) as $sev | $sev == "high" or $sev == "critical") | .vulnerability.id' "${grype_output}")
+          if [[ -n "${critical_or_highs}" ]]; then
+            failed_images=$(jq -c --arg image "${image}" '. += [$image]' <<<"${failed_images}")
+            emoji=':no_entry_sign:'
+          fi
+
+          # Construct the header for the image in the comment body 
+          echo "## ${image%@*} ${emoji}" >> "${GITHUB_OUTPUT}"
+          echo "\`${image#*@}\`" >> "${GITHUB_OUTPUT}"
+
+          # Put the scan results inside a <details> block so it's
+          # collapsible
+          echo '' >> "${GITHUB_OUTPUT}"
+          echo '<details>' >> "${GITHUB_OUTPUT}"
+          echo '' >> "${GITHUB_OUTPUT}"
+
+          # Extract vulnerabilities in table format from the json output. Sort
+          # by severity.
+          vulnerabilities=$(jq -r '
+            .matches // []
+            | sort_by(
+                .vulnerability.severity 
+                | if . == "Critical" then 0 
+                  elif . == "High" then 1
+                  elif . == "Medium" then 2
+                  elif . == "Low" then 3
+                  else 4 end 
+            )
+            | .[]
+            | "|" + .artifact.name + "|" + .artifact.version + "|" + .vulnerability.fix.state + "|" + .vulnerability.id + "|" + .vulnerability.severity + "|"
+          ' "${grype_output}")
+
+          # Write vulnerabilities to the comment body if there are any.
+          if [[ -n "${vulnerabilities}" ]]; then
+            echo '### Vulnerabilities' >> "${GITHUB_OUTPUT}"
+            echo '| Name | Version | State | CVE | Severity |' >> "${GITHUB_OUTPUT}"
+            echo '| ---- | ------- | ----- | --- | -------- |' >> "${GITHUB_OUTPUT}"
+            echo "${vulnerabilities}" >> "${GITHUB_OUTPUT}"
+          fi
+
+          # Otherwise indicate that there are no CVEs
+          if [[ -z "${vulnerabilities}" ]]; then
+            echo 'No vulnerabilities found.' >> "${GITHUB_OUTPUT}"
+          fi
+
+          # Close the details block
+          echo '' >> "${GITHUB_OUTPUT}"
+          echo '</details>' >> "${GITHUB_OUTPUT}"
+          echo '' >> "${GITHUB_OUTPUT}"
+         done < <(jq -c '.updates // [] | .[]' <<<'${{ steps.digestabot.outputs.json }}')
+
+         # Close the body
+         echo 'EOF' >> "${GITHUB_OUTPUT}"
+
+         # Create the failed_images output
+         echo "failed_images=${failed_images}" >> "${GITHUB_OUTPUT}"
+
+    # Find the commit sha, set a status on the commit
+    - if: ${{ steps.digestabot.outputs.pull_request_number != '' }}
+      shell: bash
+      run: |
+        # Get the commit SHA for the PR
+        commit_sha=$(gh api repos/${{ github.repository }}/pulls/${{ steps.digestabot.outputs.pull_request_number }} --jq '.head.sha')
+
+        # Format the failed images one per line
+        failed_images=$(jq -r '. | join("\\n")' <<<'${{ steps.grype_scan.outputs.failed_images }}')
+
+        # Configure the inputs to the check based on whether we have any failed
+        # images
+        conclusion='success'
+        title='Success'
+        summary='Found no High/Critical severity findings.'
+        if [[ -n "${failed_images}" ]]; then
+          conclusion='failure'
+          title='Found High/Critical CVEs'
+          summary="Found High/Critical severity findings for these images:\n${failed_images}"
+        fi
+
+        # Create a failed check run
+        curl -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/check-runs \
+          -d '{
+            "name": "Grype Scan",
+            "head_sha": "'"${commit_sha}"'",
+            "status": "completed",
+            "conclusion": "'"${conclusion}"'",
+            "output": {
+              "title": "'"${title}"'",
+              "summary": "'"${summary}"'"
+            }
+          }'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # Find the comment (if it already exists)
+    - uses: peter-evans/find-comment@v3
+      id: find_comment
+      if: ${{ steps.digestabot.outputs.pull_request_number != '' }}
+      with:
+        issue-number: ${{ steps.digestabot.outputs.pull_request_number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: 'Results of `grype` for each image.'
+
+    # Create/update comment
+    - uses: peter-evans/create-or-update-comment@v4
+      with:
+        comment-id: ${{ steps.find_comment.outputs.comment-id }}
+        issue-number: ${{ steps.digestabot.outputs.pull_request_number }}
+        body: |
+          Results of `grype` for each image.
+          ${{ steps.grype_scan.outputs.body }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        edit-mode: replace
