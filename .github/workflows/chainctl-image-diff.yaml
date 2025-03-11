@@ -1,0 +1,181 @@
+name: Chainctl Image Diff
+
+on:
+  workflow_dispatch:
+  schedule:
+    # At the end of every day
+    - cron: "0 0 * * *"
+
+jobs:
+  chainctl-image-diff:
+    name: Chainctl Image Diff
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Install chainctl. Configure auth with the id of an assumed identity.
+    #
+    # You can create an assumed identity for a Github workflow running on a
+    # given branch like:
+    #   chainctl iam identities create github my-gha-identity \
+    #     --github-repo=my-org/repo-name \
+    #     --github-ref=refs/heads/test-branch \
+    #     --role=registry.puller
+    - uses: chainguard-dev/setup-chainctl@v0
+      with:
+        identity: "326bcde5903252f3ae2fe01c691b5a50f7046b5d/6d4c52015ce89613"
+
+    # Install grype. It's required by chainctl image diff.
+    - uses: anchore/scan-action/download-grype@v3
+
+    # Run digestabot. Don't create the PR.
+    - uses: chainguard-dev/digestabot@main
+      id: digestabot
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        create-pr: false
+
+    # Revert any changes made by digestabot.
+    - shell: bash
+      run: |
+        git reset --hard && git clean -fd
+
+    # Iterate over the updates described by the JSON output of digestabot. Run
+    # chainctl image diff and perform any updates that resolve vulnerabilities.
+    #
+    # Construct the PR body.
+    - shell: bash
+      id: chainctl_image_diff
+      run: |
+        # Start the PR body
+        echo 'body<<EOF' >> "${GITHUB_OUTPUT}"
+
+        while read -r item; do
+           from_image=$(jq -r '.image + "@" + .digest' <<<$item)
+           to_image=$(jq -r '.image + "@" + .updated_digest' <<<$item)
+           file=$(jq -r '.file' <<<$item)
+
+           # Store the diff output in a filename derived from the images. We can
+           # use this to avoid diffing the same images more than once.
+           diff_file="$(sha256sum <<<"${from_image}+${to_image}" | awk '{print $1}').json"
+
+           # Skip image updates we've already processed
+           if [[ -f "${diff_file}" ]]; then
+             echo "Skipping because we've already processed the change; from=${from_image} to=${to_image}"
+             continue
+           fi
+
+           # Skip non-chainguard images
+           # TODO: change this once we support images outside of cgr.dev
+           if [[ ! "${from_image}" =~ ^cgr.dev/.+$ ]] || [[ ! "${to_image}" =~ ^cgr.dev/.+$ ]]; then
+             echo "Skipping because we only support Chainguard images; from=${from_image} to=${to_image}"
+             continue
+           fi
+
+           echo "Processing from=${from_image} to=${to_image}"
+
+           # Perform the diff, save it to the file
+           chainctl images diff -o json "${from_image}" "${to_image}" > "${diff_file}"
+
+           # Ignore updates that don't remove any vulnerabilities
+           if [[ -z $(jq -r '.vulnerabilities.removed // [] | .[].id' "${diff_file}") ]]; then
+            echo "Skipping because the update doesn't resolve any vulnerabilities; from=${from_image} to=${to_image}"
+            continue
+           fi
+
+           # Perform the update
+           sed -i -e "s|$from_image|$to_image|g" "$file"
+
+           # Construct the header for the image in the PR body 
+           echo "## ${to_image%@*}" >> "${GITHUB_OUTPUT}"
+           echo '|      | Digest               |' >> "${GITHUB_OUTPUT}"
+           echo '| ---- | -------------------- |' >> "${GITHUB_OUTPUT}"
+           echo "| From | \`${from_image#*@}\` |" >> "${GITHUB_OUTPUT}"
+           echo "| To   | \`${to_image#*@}\`   |" >> "${GITHUB_OUTPUT}"
+
+           # Put the diff information inside a <details> block so it's
+           # collapsible
+           echo '' >> "${GITHUB_OUTPUT}"
+           echo '<details>' >> "${GITHUB_OUTPUT}"
+           echo '' >> "${GITHUB_OUTPUT}"
+
+           # Vulnerabilities added
+           vulnerabilities_added=$(jq -r '.vulnerabilities.added // [] | .[] | "|" + .id + "|" + .reference + "|" + .severity + "|"' "${diff_file}")
+           if [ ! -z "${vulnerabilities_added}" ]; then
+             echo '### Vulnerabilities Added' >> "${GITHUB_OUTPUT}"
+             echo '| Id | Reference | Severity |' >> "${GITHUB_OUTPUT}"
+             echo '| -- | --------- | -------- |' >> "${GITHUB_OUTPUT}"
+             echo "${vulnerabilities_added}" >> "${GITHUB_OUTPUT}"
+           fi
+
+           # Vulnerabilities removed
+           vulnerabilities_removed=$(jq -r '.vulnerabilities.removed // [] | .[] | "|" + .id + "|" + .reference + "|" + .severity + "|"' "${diff_file}")
+           if [ ! -z "${vulnerabilities_removed}" ]; then
+             echo '### Vulnerabilities Removed' >> "${GITHUB_OUTPUT}"
+             echo '| Id | Reference | Severity |' >> "${GITHUB_OUTPUT}"
+             echo '| -- | --------- | -------- |' >> "${GITHUB_OUTPUT}"
+             echo "${vulnerabilities_removed}" >> "${GITHUB_OUTPUT}"
+           fi
+
+           # Packages added
+           packages_added=$(jq -r '.packages.added // [] | .[] | select(.reference | startswith("pkg:apk/")) | "|" + .name + "|" + .version + "|" + .reference + "|"' "${diff_file}")
+           if [ ! -z "${packages_added}" ]; then
+             echo '### Packages Added' >> "${GITHUB_OUTPUT}"
+             echo '| Name | Version | Reference |' >> "${GITHUB_OUTPUT}"
+             echo '| ---- | ------- | --------- |' >> "${GITHUB_OUTPUT}"
+             echo "${packages_added}" >> "${GITHUB_OUTPUT}"
+           fi
+
+           # Packages removed
+           packages_removed=$(jq -r '.packages.removed // [] | .[] | select(.reference | startswith("pkg:apk/")) | "|" + .name + "|" + .version + "|" + .reference + "|"' "${diff_file}")
+           if [ ! -z "${packages_removed}" ]; then
+             echo '### Packages Removed' >> "${GITHUB_OUTPUT}"
+             echo '| Name | Version | Reference |' >> "${GITHUB_OUTPUT}"
+             echo '| ---- | ------- | --------- |' >> "${GITHUB_OUTPUT}"
+             echo "${packages_removed}" >> "${GITHUB_OUTPUT}"
+           fi
+
+           # If there are no changes, then note that in the body.
+           if [ -z "${packages_added}" ] && [ -z "${packages_removed}" ] && [ -z "${vulnerabilities_added}" ] && [ -z "${vulnerabilities_removed}" ]; then
+             echo 'No changes.' >> "${GITHUB_OUTPUT}"
+           fi
+
+           # Close the details block
+           echo '' >> "${GITHUB_OUTPUT}"
+           echo '</details>' >> "${GITHUB_OUTPUT}"
+           echo '' >> "${GITHUB_OUTPUT}"
+
+         done < <(jq -c '.updates // [] | .[]' <<<'${{ steps.digestabot.outputs.json }}')
+
+         # Close the body
+         echo 'EOF' >> "${GITHUB_OUTPUT}"
+
+    # Check if we made any changes
+    - id: create_pr_update
+      shell: bash
+      run: |
+        git diff --stat
+        echo "create_pr_update=false" >> $GITHUB_OUTPUT
+        if [[ $(git diff --stat) != '' ]]; then
+          echo "create_pr_update=true" >> $GITHUB_OUTPUT
+        fi
+
+    # Create the pull request
+    - uses: peter-evans/create-pull-request@v7
+      if: ${{ steps.create_pr_update.outputs.create_pr_update == 'true' }}
+      id: pull_request
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'Update Digests (`chainctl image diff`)'
+        title: 'Update Digests (`chainctl image diff`)'
+        body: |
+          Results of `chainctl image diff` for each image.
+          ${{ steps.chainctl_image_diff.outputs.body }}
+        branch: chainctl-image-diff
+        delete-branch: true
