@@ -24,7 +24,7 @@ jobs:
     - uses: anchore/scan-action/download-grype@v3
 
     # Run digestabot
-    - uses: chainguard-dev/digestabot@main
+    - uses: chainguard-dev/digestabot@v1
       id: digestabot
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
